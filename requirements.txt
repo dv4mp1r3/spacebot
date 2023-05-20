@@ -1,0 +1,14 @@
+certifi >= 14.05.14
+future; python_version<="2.7"
+six >= 1.10
+python_dateutil >= 2.5.3
+setuptools >= 21.0.0
+urllib3 >= 1.15.1
+aiogram >= 3.0.0b
+paho-mqtt >= 1.6.1
+connexion~=2.14.2
+Flask~=2.2.5
+typing~=3.7.4.3
+APScheduler~=3.10.1
+python-dateutil~=2.8.2
+python-dotenv~=1.0.0
