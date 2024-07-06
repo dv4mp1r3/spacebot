@@ -112,3 +112,15 @@ class CsvDataSource(BaseDataSource):
     @classmethod
     def get_records(cls) -> list:
         return cls._cache
+
+
+class GoogleSheetsDataSource(BaseDataSource):
+    pass
+
+
+class BalanceFromGoogleSheet(GoogleSheetsDataSource):
+    pass
+
+
+class TransactionsFromGoogleSheet(GoogleSheetsDataSource):
+    pass
