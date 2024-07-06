@@ -25,20 +25,20 @@ scheduler = AsyncIOScheduler()
 router = Router()
 tg_access_control = TelegramCsvBasedAccessControl(CsvDataSource('residents.csv', ','))
 
+class Form(StatesGroup):
+    start = State()
+    tranlog = State()
+    open = State()
+
 
 def on_connect(client, userdata, flags, rc):
     logging.info(f"mqtt connected with result code {str(rc)}")
 
 
-client = mqtt.Client()
-client.connect(MQTT_URL, 1883, 60)
-client.on_connect = on_connect
-
-
-class Form(StatesGroup):
-    start = State()
-    tranlog = State()
-    open = State()
+if MQTT_URL != '':
+    client = mqtt.Client()
+    client.connect(MQTT_URL, 1883, 60)
+    client.on_connect = on_connect
 
 
 @router.message(Command("cancel"))
@@ -54,14 +54,6 @@ async def cancel_handler(message: Message, state: FSMContext) -> None:
         "Вы сбросили сохраненное состояние.",
         reply_markup=ReplyKeyboardRemove(),
     )
-
-
-@router.message()
-async def echo_handler(message: types.Message) -> None:
-    await message.answer("/start - сброс состояния (начало работы бота)\n"
-                         "/tranlog - показ лога транзакций\n"
-                         "/open - открытие двери (потребуется дополнительное подтверждение)")
-
 
 @router.message(Command(commands=["start"]))
 async def command_start_handler(message: Message, state: FSMContext) -> None:
@@ -110,6 +102,9 @@ async def commend_open_handler(message: Message, state: FSMContext) -> None:
 
 @router.message(Form.open, F.text.casefold() == 'да')
 async def open_the_door(message: Message, state: FSMContext) -> None:
+    if ('client' in globals()) is False:
+        await message.reply('Бот запущен без возможности открывать двери :(')
+        return
     global client
     await state.set_state(Form.start)
     if client.is_connected() is False:
@@ -143,6 +138,13 @@ async def process_dont_like_write_bots(message: Message, state: FSMContext) -> N
 @router.message(Form.open)
 async def process_unknown_write_bots(message: Message, state: FSMContext) -> None:
     await message.reply('Принимаются только ответы "Да" или "Нет"')
+
+
+@router.message()
+async def echo_handler(message: types.Message) -> None:
+    await message.answer("/start - сброс состояния (начало работы бота)\n"
+                         "/tranlog - показ лога транзакций\n"
+                         "/open - открытие двери (потребуется дополнительное подтверждение)")
 
 
 async def main() -> None:
