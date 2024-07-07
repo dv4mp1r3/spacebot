@@ -67,3 +67,4 @@ target/
 
 #.env files
 .env
+.json
