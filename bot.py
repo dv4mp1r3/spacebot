@@ -31,6 +31,7 @@ tg_access_control = TelegramCsvBasedAccessControl(CsvDataSource('residents.csv',
 class Form(StatesGroup):
     start = State()
     tranlog = State()
+    balance = State()
     open = State()
 
 
@@ -58,6 +59,7 @@ async def cancel_handler(message: Message, state: FSMContext) -> None:
         reply_markup=ReplyKeyboardRemove(),
     )
 
+
 @router.message(Command(commands=["start"]))
 async def command_start_handler(message: Message, state: FSMContext) -> None:
     await state.clear()
@@ -81,6 +83,18 @@ async def command_transaction_log(message: Message, state: FSMContext) -> None:
             answer += f"({record.comment})"
         answer += '\n'
     await message.answer(answer)
+
+
+@router.message(Command(commands=["balance"]))
+async def command_balance(message: Message, state: FSMContext) -> None:
+    await state.set_state(Form.balance)
+    user_id = f'@{message.from_user.username}'
+    data_source = BalanceFromGoogleSheet(url=GOOGLE_SHEET_URL, user_id=user_id)
+    records = data_source.get_records()
+    if len(records) < 1:
+        await message.answer('На текущий момент нет записей по балансу.')
+        return
+    await message.answer(f'Баланс {records[0][user_id]}')
 
 
 @router.message(Command(commands=["open"]))
