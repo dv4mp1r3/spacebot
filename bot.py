@@ -8,7 +8,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.filters import Command
 from aiogram.types import Message, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
-from logic.data_providers import TransactionDataSource, ResidentDataSource, CsvDataSource
+from logic.data_providers import TransactionDataSource, ResidentDataSource, CsvDataSource, BalanceFromGoogleSheet, \
+    TransactionsFromGoogleSheet, ResidentDataSourceFromGoogleSheet
 from logic.access_control import TelegramCsvBasedAccessControl
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -20,10 +21,12 @@ load_dotenv()
 TOKEN = os.getenv('SWYNCA_API_TOKEN')
 HOST = os.getenv('SWYNCA_API_HOST')
 MQTT_URL = os.getenv('MQTT_URL')
+GOOGLE_SHEET_URL = os.getenv('GOOGLE_SHEET_URL')
 
 scheduler = AsyncIOScheduler()
 router = Router()
 tg_access_control = TelegramCsvBasedAccessControl(CsvDataSource('residents.csv', ','))
+
 
 class Form(StatesGroup):
     start = State()
@@ -65,7 +68,8 @@ async def command_start_handler(message: Message, state: FSMContext) -> None:
 @router.message(Command(commands=["tranlog"]))
 async def command_transaction_log(message: Message, state: FSMContext) -> None:
     await state.set_state(Form.tranlog)
-    data_source = TransactionDataSource(HOST, TOKEN, message.from_user.id)
+    username = message.from_user.username
+    data_source = TransactionsFromGoogleSheet(url=GOOGLE_SHEET_URL, user_id=f'@{username}')
     if data_source.get_records_count() <= 0:
         await message.answer('На текущий момент нет записей в логе транзакций.')
         return
@@ -157,7 +161,8 @@ async def main() -> None:
 
 
 async def send_deposit_notifications(dp: Dispatcher, bot):
-    data_source = ResidentDataSource(HOST, TOKEN)
+    data_source = ResidentDataSourceFromGoogleSheet(url=GOOGLE_SHEET_URL)
+
     if data_source.get_records_count() <= 0:
         return
     for record in data_source.get_records():
