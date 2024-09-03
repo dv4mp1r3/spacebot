@@ -39,6 +39,13 @@ def on_connect(client, userdata, flags, rc):
     logging.info(f"mqtt connected with result code {str(rc)}")
 
 
+def mock_username(real_username: str) -> str:
+    from_env_username = os.getenv('DEBUG_TG_USERNAME')
+    if len(from_env_username) > 0:
+        return from_env_username
+    return real_username
+
+
 if MQTT_URL != '':
     client = mqtt.Client()
     client.connect(MQTT_URL, 1883, 60)
@@ -70,7 +77,7 @@ async def command_start_handler(message: Message, state: FSMContext) -> None:
 @router.message(Command(commands=["tranlog"]))
 async def command_transaction_log(message: Message, state: FSMContext) -> None:
     await state.set_state(Form.tranlog)
-    username = message.from_user.username
+    username = mock_username(message.from_user.username)
     data_source = TransactionsFromGoogleSheet(url=GOOGLE_SHEET_URL, user_id=f'@{username}')
     if data_source.get_records_count() <= 0:
         await message.answer('На текущий момент нет записей в логе транзакций.')
@@ -88,7 +95,7 @@ async def command_transaction_log(message: Message, state: FSMContext) -> None:
 @router.message(Command(commands=["balance"]))
 async def command_balance(message: Message, state: FSMContext) -> None:
     await state.set_state(Form.balance)
-    user_id = f'@{message.from_user.username}'
+    user_id = f'@{mock_username(message.from_user.username)}'
     data_source = BalanceFromGoogleSheet(url=GOOGLE_SHEET_URL, user_id=user_id)
     records = data_source.get_records()
     if len(records) < 1:
