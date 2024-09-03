@@ -159,9 +159,10 @@ class GoogleSheetsDataSource(BaseDataSource):
 
     @classmethod
     def format_value_cell(cls, value: str) -> int:
-        return int(value
-                   .replace('.00 ₽ ', '')
-                   .replace(',', '')) * -100
+        sub_strings = ['.00', '₽', ',', ' ']
+        for ss in sub_strings:
+            value = value.replace(ss, '')
+        return int(value) * -100
 
 
 class BalanceFromGoogleSheet(GoogleSheetsDataSource):
