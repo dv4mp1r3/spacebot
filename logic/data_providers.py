@@ -158,11 +158,11 @@ class GoogleSheetsDataSource(BaseDataSource):
         return ''
 
     @classmethod
-    def format_value_cell(cls, value: str) -> int:
+    def format_value_cell(cls, value: str) -> float:
         sub_strings = ['.00', '₽', ',', ' ']
         for ss in sub_strings:
             value = value.replace(ss, '')
-        return float(value) * -100
+        return float(value) * 100
 
 
 class BalanceFromGoogleSheet(GoogleSheetsDataSource):
@@ -178,6 +178,18 @@ class BalanceFromGoogleSheet(GoogleSheetsDataSource):
 class TransactionsFromGoogleSheet(GoogleSheetsDataSource):
 
     @classmethod
+    def get_cell_value(cls, row: list) -> str:
+        income = str(row[6])
+        consumption = str(row[5])
+        len_i = len(income)
+        len_c = len(consumption)
+        if len_i > 0 or (len_c > 0 and income == consumption):
+            return income
+        if len_c > 0:
+            return f'-{consumption}'
+        return '0'
+
+    @classmethod
     def get_records(cls) -> list:
         result = []
         full_id = cls.get_full_id().lower()
@@ -188,15 +200,13 @@ class TransactionsFromGoogleSheet(GoogleSheetsDataSource):
             while True:
                 if i == len(data):
                     break
-                if str(data[i][4]).lower().__contains__(full_id) or str(data[i][7]).lower().__contains__(full_id):
-                #if data[i][4] == full_id or data[i][7] == full_id:
-                    value = '0'
-                    if len(data[i][6]) > 0:
-                        value = str(data[i][6])
+                if str(data[i][4]).lower().__contains__(full_id) \
+                        or str(data[i][7]).lower().__contains__(full_id):
+                    raw_value = cls.get_cell_value(data[i])
                     result.append(Transaction(
                         id=i,
                         datetime=data[i][0],
-                        value=cls.format_value_cell(value),
+                        value=cls.format_value_cell(raw_value),
                         comment=cls.make_comment(data[i])
                     ))
                 i += 1
