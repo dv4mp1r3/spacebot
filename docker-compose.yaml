@@ -1,0 +1,10 @@
+version: "3"
+services:
+  spacebot:
+    container_name: spacebot
+    image: spacebot:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+    env_file:
+      - .env

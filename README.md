@@ -13,6 +13,9 @@ cp .env.example .env
 
 ## Getting Started (docker)
 
+Make sure you have Google service account inside project directory named service-account.json. 
+This file needs to access to document with accounting info from GOOGLE_SHEET_URL env.  
+
 First of all, edit files .env and residents.csv (fill in the correct data).
 
 Then build and run docker container: ```docker build -t your/tag:1.0 . && docker run your/tag:1.0```
