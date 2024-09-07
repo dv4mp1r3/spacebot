@@ -180,15 +180,16 @@ class TransactionsFromGoogleSheet(GoogleSheetsDataSource):
     @classmethod
     def get_records(cls) -> list:
         result = []
-        full_id = cls.get_full_id()
+        full_id = cls.get_full_id().lower()
         if full_id != '':
             ws = cls.get_sheet().worksheet(title='Accounting')
             data = ws.get_all_values()
             i = 1
             while True:
-                if i == len(data) or data[i][2] == '':
+                if i == len(data):
                     break
-                if data[i][4] == full_id or data[i][7] == full_id:
+                if str(data[i][4]).lower().__contains__(full_id) or str(data[i][7]).lower().__contains__(full_id):
+                #if data[i][4] == full_id or data[i][7] == full_id:
                     value = '0'
                     if len(data[i][6]) > 0:
                         value = str(data[i][6])
