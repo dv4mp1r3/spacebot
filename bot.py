@@ -3,11 +3,12 @@ import logging
 import os
 import sys
 import json
+import uuid
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.filters import Command
-from aiogram.types import Message, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton
+from aiogram.types import Message, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InputFile, FSInputFile
 from logic.data_providers import TransactionDataSource, ResidentDataSource, CsvDataSource, BalanceFromGoogleSheet, \
     TransactionsFromGoogleSheet, ResidentDataSourceFromGoogleSheet
 from logic.access_control import TelegramCsvBasedAccessControl
@@ -44,6 +45,13 @@ def mock_username(real_username: str) -> str:
     if len(from_env_username) > 0:
         return from_env_username
     return real_username
+
+
+def gen_random_string(length: int = 10) -> str:
+    random = str(uuid.uuid4())
+    random = random.upper()
+    random = random.replace("-", "")
+    return random[0:length]
 
 
 if MQTT_URL != '':
@@ -89,6 +97,17 @@ async def command_transaction_log(message: Message, state: FSMContext) -> None:
         if record.comment is not None and len(record.comment) > 0:
             answer += f"({record.comment})"
         answer += '\n'
+    if len(answer) > 4096:
+        filepath = f'/tmp/{username}-{gen_random_string()}.log'
+        f = open(filepath, "a")
+        f.write(answer)
+        f.close()
+        await message.answer_document(
+            document=FSInputFile(path=filepath, filename=f'{username}.log'),
+            caption='Транзакций слишком много, поэтому отправлены в файле'
+        )
+        os.remove(filepath)
+        return
     await message.answer(answer)
 
 
