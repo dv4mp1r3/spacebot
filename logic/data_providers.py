@@ -162,7 +162,7 @@ class GoogleSheetsDataSource(BaseDataSource):
         sub_strings = ['.00', '₽', ',', ' ']
         for ss in sub_strings:
             value = value.replace(ss, '')
-        return int(value) * -100
+        return float(value) * -100
 
 
 class BalanceFromGoogleSheet(GoogleSheetsDataSource):
