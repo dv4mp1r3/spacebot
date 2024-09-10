@@ -27,6 +27,19 @@ GOOGLE_SHEET_URL = os.getenv('GOOGLE_SHEET_URL')
 scheduler = AsyncIOScheduler()
 router = Router()
 tg_access_control = TelegramCsvBasedAccessControl(CsvDataSource('residents.csv', ','))
+cached_answers = dict()
+
+
+def get_cached_data(command: str, username: str) -> str:
+    key = f'{command}-{username}'
+    if key in cached_answers:
+        return cached_answers[key]
+    return ''
+
+
+def set_cached_data(command: str, username: str, data: str):
+    key = f'{command}-{username}'
+    cached_answers.update({key: data})
 
 
 class Form(StatesGroup):
@@ -86,17 +99,20 @@ async def command_start_handler(message: Message, state: FSMContext) -> None:
 async def command_transaction_log(message: Message, state: FSMContext) -> None:
     await state.set_state(Form.tranlog)
     username = mock_username(message.from_user.username)
-    data_source = TransactionsFromGoogleSheet(url=GOOGLE_SHEET_URL, user_id=f'@{username}')
-    if data_source.get_records_count() <= 0:
-        await message.answer('На текущий момент нет записей в логе транзакций.')
-        return
-    answer = 'Список транзакций:\n'
-    for record in data_source.get_records():
-        summ = record.value / 100
-        answer += f"{record.datetime} на сумму {summ}"
-        if record.comment is not None and len(record.comment) > 0:
-            answer += f"({record.comment})"
-        answer += '\n'
+    answer = get_cached_data(command='tranlog', username=username)
+    if len(answer) <= 0:
+        data_source = TransactionsFromGoogleSheet(url=GOOGLE_SHEET_URL, user_id=f'@{username}')
+        if data_source.get_records_count() <= 0:
+            await message.answer('На текущий момент нет записей в логе транзакций.')
+            return
+        answer = 'Список транзакций:\n'
+        for record in data_source.get_records():
+            summ = record.value / 100
+            answer += f"{record.datetime} на сумму {summ}"
+            if record.comment is not None and len(record.comment) > 0:
+                answer += f"({record.comment})"
+            answer += '\n'
+        set_cached_data(command='tranlog', username=username, data=answer)
     if len(answer) > 4096:
         filepath = f'/tmp/{username}-{gen_random_string()}.log'
         f = open(filepath, "a")
@@ -115,12 +131,16 @@ async def command_transaction_log(message: Message, state: FSMContext) -> None:
 async def command_balance(message: Message, state: FSMContext) -> None:
     await state.set_state(Form.balance)
     user_id = f'@{mock_username(message.from_user.username)}'
-    data_source = BalanceFromGoogleSheet(url=GOOGLE_SHEET_URL, user_id=user_id)
-    records = data_source.get_records()
-    if len(records) < 1:
-        await message.answer('На текущий момент нет записей по балансу.')
-        return
-    await message.answer(f'Баланс {records[0][user_id]}')
+    answer = get_cached_data('balance', user_id)
+    if len(answer) <= 0:
+        data_source = BalanceFromGoogleSheet(url=GOOGLE_SHEET_URL, user_id=user_id)
+        records = data_source.get_records()
+        if len(records) < 1:
+            await message.answer('На текущий момент нет записей по балансу.')
+            return
+        answer = records[0][user_id]
+        set_cached_data(command='balance', username=user_id, data=answer)
+    await message.answer(f'Баланс {answer}')
 
 
 @router.message(Command(commands=["open"]))
