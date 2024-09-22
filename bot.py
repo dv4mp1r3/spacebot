@@ -215,8 +215,9 @@ async def main() -> None:
     dp = Dispatcher()
     dp.include_router(router)
     bot = Bot(os.getenv('TG_BOT_TOKEN'), parse_mode="HTML")
-    scheduler.add_job(send_deposit_notifications, "cron", day=1, minute=0, args=(dp, bot))
-    scheduler.start()
+    if os.getenv('ENABLE_DEPOSIT_NOTIFICATIONS') == '1':
+        scheduler.add_job(send_deposit_notifications, "cron", day=1, minute=0, args=(dp, bot))
+        scheduler.start()
     await dp.start_polling(bot)
 
 
