@@ -16,6 +16,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import paho.mqtt.client as mqtt
 from dotenv.main import load_dotenv
+from logic.cache import UnlimitedTimeAnswersDataCache
 
 load_dotenv()
 
@@ -27,19 +28,7 @@ GOOGLE_SHEET_URL = os.getenv('GOOGLE_SHEET_URL')
 scheduler = AsyncIOScheduler()
 router = Router()
 tg_access_control = TelegramCsvBasedAccessControl(CsvDataSource('residents.csv', ','))
-cached_answers = dict()
-
-
-def get_cached_data(command: str, username: str) -> str:
-    key = f'{command}-{username}'
-    if key in cached_answers:
-        return cached_answers[key]
-    return ''
-
-
-def set_cached_data(command: str, username: str, data: str):
-    key = f'{command}-{username}'
-    cached_answers.update({key: data})
+cache = UnlimitedTimeAnswersDataCache()
 
 
 class Form(StatesGroup):
@@ -99,7 +88,8 @@ async def command_start_handler(message: Message, state: FSMContext) -> None:
 async def command_transaction_log(message: Message, state: FSMContext) -> None:
     await state.set_state(Form.tranlog)
     username = mock_username(message.from_user.username)
-    answer = get_cached_data(command='tranlog', username=username)
+    cache_key = cache.gen_key('tranlog', username)
+    answer = cache.get_data(cache_key)
     if len(answer) <= 0:
         data_source = TransactionsFromGoogleSheet(url=GOOGLE_SHEET_URL, user_id=f'@{username}')
         if data_source.get_records_count() <= 0:
@@ -112,7 +102,7 @@ async def command_transaction_log(message: Message, state: FSMContext) -> None:
             if record.comment is not None and len(record.comment) > 0:
                 answer += f"({record.comment})"
             answer += '\n'
-        set_cached_data(command='tranlog', username=username, data=answer)
+        cache.set_data(cache_key, answer)
     if len(answer) > 4096:
         filepath = f'/tmp/{username}-{gen_random_string()}.log'
         f = open(filepath, "a")
@@ -131,7 +121,8 @@ async def command_transaction_log(message: Message, state: FSMContext) -> None:
 async def command_balance(message: Message, state: FSMContext) -> None:
     await state.set_state(Form.balance)
     user_id = f'@{mock_username(message.from_user.username)}'
-    answer = get_cached_data('balance', user_id)
+    cache_key = cache.gen_key('balance', user_id)
+    answer = cache.get_data(cache_key)
     if len(answer) <= 0:
         data_source = BalanceFromGoogleSheet(url=GOOGLE_SHEET_URL, user_id=user_id)
         records = data_source.get_records()
@@ -139,7 +130,7 @@ async def command_balance(message: Message, state: FSMContext) -> None:
             await message.answer('На текущий момент нет записей по балансу.')
             return
         answer = records[0][user_id]
-        set_cached_data(command='balance', username=user_id, data=answer)
+        cache.set_data(cache_key, answer)
     await message.answer(f'Баланс {answer}')
 
 
