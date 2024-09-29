@@ -129,6 +129,7 @@ async def command_transaction_log(message: Message, state: FSMContext) -> None:
 
 @router.message(Command(commands=["balance"]))
 async def command_balance(message: Message, state: FSMContext) -> None:
+    empty_balance_answer = 'На текущий момент нет записей по балансу.'
     await state.set_state(Form.balance)
     user_id = f'@{mock_username(message.from_user.username)}'
     answer = get_cached_data('balance', user_id)
@@ -136,9 +137,14 @@ async def command_balance(message: Message, state: FSMContext) -> None:
         data_source = BalanceFromGoogleSheet(url=GOOGLE_SHEET_URL, user_id=user_id)
         records = data_source.get_records()
         if len(records) < 1:
-            await message.answer('На текущий момент нет записей по балансу.')
+            set_cached_data(command='balance', username=user_id, data='')
+            await message.answer(empty_balance_answer)
             return
         answer = records[0][user_id]
+        if len(answer) < 1:
+            set_cached_data(command='balance', username=user_id, data=answer)
+            await message.answer(empty_balance_answer)
+            return
         set_cached_data(command='balance', username=user_id, data=answer)
     await message.answer(f'Баланс {answer}')
 
