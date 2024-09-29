@@ -143,7 +143,7 @@ class GoogleSheetsDataSource(BaseDataSource):
         tg_ids = ws.col_values(3)
         i = 0
         for tg_id in tg_ids:
-            if tg_id == cls.get_user_id():
+            if tg_id.strip().lower() == cls.get_user_id().lower():
                 break
             i += 1
         if i != 0:
