@@ -1,6 +1,6 @@
 ## Requirements.
 
-Python 3.11+ with pip for host or docker
+Python 3.10.x or 3.11.x with pip for host or docker
 
 ## Installation & Usage
 
