@@ -1,9 +1,10 @@
 import gspread
 from gspread import Spreadsheet
 
-import openapi_client
-from openapi_client import Resident, Transaction
-from openapi_client.rest import ApiException
+import openapi_client as openapi_client
+from openapi_client.api.members_api import MembersApi
+from openapi_client.models import member_dto, member_transaction_dto
+from openapi_client.exceptions import ApiException
 
 
 class DataSourceMeta(type):
@@ -175,6 +176,34 @@ class BalanceFromGoogleSheet(GoogleSheetsDataSource):
         return []
 
 
+class BalanceFromReSwynca(OpenApiDataSource):
+    _user_id: str
+
+    def __new__(cls, host: str, access_token: str, user_id: str, *args, **kwargs):
+        cls._user_id = user_id
+        return super().__new__(cls, host, access_token)
+
+    @classmethod
+    def init_api_client(cls) -> openapi_client.ApiClient:
+        re_swynca_config = openapi_client.Configuration(host=cls._host)
+        api_client = openapi_client.ApiClient(configuration=re_swynca_config)
+        api_client.set_default_header("Authorization", "Bearer " + cls._token)
+        return api_client
+
+    @classmethod
+    def get_records(cls) -> list:
+        result = []
+        with cls.init_api_client() as api_client:
+            members_api = MembersApi(api_client)
+            members = members_api.members_controller_find_all()
+            if len(members) == 0:
+                return result
+            for m in members:
+                if m.telegram_metadata is not None and m.telegram_metadata.telegram_id == cls._user_id:
+                    return [{cls._user_id: m.balance}]
+            return result
+
+
 class TransactionsFromGoogleSheet(GoogleSheetsDataSource):
 
     @classmethod
@@ -203,12 +232,12 @@ class TransactionsFromGoogleSheet(GoogleSheetsDataSource):
                 if str(data[i][4]).lower().__contains__(full_id) \
                         or str(data[i][7]).lower().__contains__(full_id):
                     raw_value = cls.get_cell_value(data[i])
-                    result.append(Transaction(
+                    '''result.append(Transaction(
                         id=i,
                         datetime=data[i][0],
                         value=cls.format_value_cell(raw_value),
                         comment=cls.make_comment(data[i])
-                    ))
+                    ))'''
                 i += 1
         return result
 
@@ -236,10 +265,10 @@ class ResidentDataSourceFromGoogleSheet(GoogleSheetsDataSource):
             if str(data[i][2]).startswith('@') is False:
                 continue
 
-            result.append(Resident(
+            '''result.append(Resident(
                 id=str(data[i][2]).replace('@', ''),
                 username='',
                 debt=cls.format_value_cell(str(data[i][10]))
-            ))
+            ))'''
             i += 1
         return result

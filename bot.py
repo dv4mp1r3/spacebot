@@ -9,13 +9,15 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.filters import Command
 from aiogram.types import Message, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InputFile, FSInputFile
-from logic.data_providers import TransactionDataSource, ResidentDataSource, CsvDataSource, BalanceFromGoogleSheet, \
-    TransactionsFromGoogleSheet, ResidentDataSourceFromGoogleSheet
-from logic.access_control import TelegramCsvBasedAccessControl
+from logic.data_providers import BalanceFromGoogleSheet, \
+    TransactionsFromGoogleSheet, ResidentDataSourceFromGoogleSheet, BalanceFromReSwynca
+from logic.access_control import DebugAlwaysAllowAccessControl
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import paho.mqtt.client as mqtt
 from dotenv.main import load_dotenv
+from openapi_client import ApiClient, Configuration
+from openapi_client.api.members_api import MembersApi
 
 load_dotenv()
 
@@ -24,9 +26,16 @@ HOST = os.getenv('SWYNCA_API_HOST')
 MQTT_URL = os.getenv('MQTT_URL')
 GOOGLE_SHEET_URL = os.getenv('GOOGLE_SHEET_URL')
 
+re_swynca_config = Configuration(host=HOST)
+api_client = ApiClient(configuration=re_swynca_config)
+api_client.set_default_header("Authorization", "Bearer " + TOKEN)
+re_swynca_members_api = MembersApi(api_client)
+space_members = []
+
+
 scheduler = AsyncIOScheduler()
 router = Router()
-tg_access_control = TelegramCsvBasedAccessControl(CsvDataSource('residents.csv', ','))
+tg_access_control = DebugAlwaysAllowAccessControl()
 cached_answers = dict()
 
 
@@ -134,13 +143,13 @@ async def command_balance(message: Message, state: FSMContext) -> None:
     user_id = f'@{mock_username(message.from_user.username)}'
     answer = get_cached_data('balance', user_id)
     if len(answer) <= 0:
-        data_source = BalanceFromGoogleSheet(url=GOOGLE_SHEET_URL, user_id=user_id)
+        data_source = BalanceFromReSwynca(host=HOST, access_token=TOKEN, user_id=str(message.from_user.id))
         records = data_source.get_records()
         if len(records) < 1:
-            set_cached_data(command='balance', username=user_id, data='')
+            #set_cached_data(command='balance', username=user_id, data='')
             await message.answer(empty_balance_answer)
             return
-        answer = records[0][user_id]
+        answer = records[0][str(message.from_user.id)]
         if len(answer) < 1:
             set_cached_data(command='balance', username=user_id, data=answer)
             await message.answer(empty_balance_answer)
@@ -241,4 +250,6 @@ async def send_deposit_notifications(dp: Dispatcher, bot):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
+    space_members = re_swynca_members_api.members_controller_find_all()
+    print(space_members)
     asyncio.run(main())

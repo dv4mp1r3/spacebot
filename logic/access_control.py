@@ -18,7 +18,7 @@ class AccessControlInterface(metaclass=AccessControlMeta):
 class TelegramCsvBasedAccessControl(AccessControlInterface):
     _data_source = None
 
-    def __new__(cls, data_source: CsvDataSource,  *args, **kwargs):
+    def __new__(cls, data_source: CsvDataSource, *args, **kwargs):
         cls._data_source = data_source
         return cls
 
@@ -31,4 +31,10 @@ class TelegramCsvBasedAccessControl(AccessControlInterface):
             except ValueError:
                 continue
         return False
-    
+
+
+class DebugAlwaysAllowAccessControl(AccessControlInterface):
+
+    @classmethod
+    def allow_access(cls, user_id: int) -> bool:
+        return True
