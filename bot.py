@@ -8,16 +8,13 @@ import uuid
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.filters import Command
-from aiogram.types import Message, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InputFile, FSInputFile
-from logic.data_providers import BalanceFromGoogleSheet, \
-    TransactionsFromGoogleSheet, ResidentDataSourceFromGoogleSheet, BalanceFromReSwynca
+from aiogram.types import Message, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, FSInputFile
+from logic.data_providers import BalanceFromReSwynca, TransactionsFromReSwynca, BaseDataSource
 from logic.access_control import DebugAlwaysAllowAccessControl
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import paho.mqtt.client as mqtt
 from dotenv.main import load_dotenv
-from openapi_client import ApiClient, Configuration
-from openapi_client.api.members_api import MembersApi
 
 load_dotenv()
 
@@ -25,12 +22,6 @@ TOKEN = os.getenv('SWYNCA_API_TOKEN')
 HOST = os.getenv('SWYNCA_API_HOST')
 MQTT_URL = os.getenv('MQTT_URL')
 GOOGLE_SHEET_URL = os.getenv('GOOGLE_SHEET_URL')
-
-re_swynca_config = Configuration(host=HOST)
-api_client = ApiClient(configuration=re_swynca_config)
-api_client.set_default_header("Authorization", "Bearer " + TOKEN)
-re_swynca_members_api = MembersApi(api_client)
-space_members = []
 
 
 scheduler = AsyncIOScheduler()
@@ -110,18 +101,17 @@ async def command_transaction_log(message: Message, state: FSMContext) -> None:
     username = mock_username(message.from_user.username)
     answer = get_cached_data(command='tranlog', username=username)
     if len(answer) <= 0:
-        data_source = TransactionsFromGoogleSheet(url=GOOGLE_SHEET_URL, user_id=f'@{username}')
+        data_source = TransactionsFromReSwynca(host=HOST, access_token=TOKEN, user_id=str(message.from_user.id))
         if data_source.get_records_count() <= 0:
             await message.answer('На текущий момент нет записей в логе транзакций.')
             return
         answer = 'Список транзакций:\n'
         for record in data_source.get_records():
-            summ = record.value / 100
-            answer += f"{record.datetime} на сумму {summ}"
+            answer += f"{record.var_date} на сумму {record.amount}"
             if record.comment is not None and len(record.comment) > 0:
                 answer += f"({record.comment})"
             answer += '\n'
-        set_cached_data(command='tranlog', username=username, data=answer)
+        # set_cached_data(command='tranlog', username=username, data=answer)
     if len(answer) > 4096:
         filepath = f'/tmp/{username}-{gen_random_string()}.log'
         f = open(filepath, "a")
@@ -237,7 +227,7 @@ async def main() -> None:
 
 
 async def send_deposit_notifications(dp: Dispatcher, bot):
-    data_source = ResidentDataSourceFromGoogleSheet(url=GOOGLE_SHEET_URL)
+    data_source = BaseDataSource()
 
     if data_source.get_records_count() <= 0:
         return
@@ -250,6 +240,4 @@ async def send_deposit_notifications(dp: Dispatcher, bot):
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.DEBUG, stream=sys.stdout)
-    space_members = re_swynca_members_api.members_controller_find_all()
-    print(space_members)
     asyncio.run(main())

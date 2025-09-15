@@ -1,9 +1,6 @@
-import gspread
-from gspread import Spreadsheet
-
 import openapi_client as openapi_client
 from openapi_client.api.members_api import MembersApi
-from openapi_client.models import member_dto, member_transaction_dto
+from openapi_client.api.member_transactions_api import MemberTransactionsApi
 from openapi_client.exceptions import ApiException
 
 
@@ -60,11 +57,10 @@ class OpenApiDataSource(BaseDataSource):
 
     @classmethod
     def init_api_client(cls) -> openapi_client.ApiClient:
-        configuration = openapi_client.Configuration(
-            host=cls._host
-        )
-        configuration.access_token = cls._token
-        return openapi_client.ApiClient(configuration)
+        re_swynca_config = openapi_client.Configuration(host=cls._host)
+        api_client = openapi_client.ApiClient(configuration=re_swynca_config)
+        api_client.set_default_header("Authorization", "Bearer " + cls._token)
+        return api_client
 
 
 class TransactionDataSource(OpenApiDataSource):
@@ -101,81 +97,6 @@ class ResidentDataSource(OpenApiDataSource):
         return []
 
 
-class CsvDataSource(BaseDataSource):
-
-    def __new__(cls, filepath: str, sep: str, *args, **kwargs):
-        f = open(filepath, "r")
-        content = f.read().replace('\r', '')
-        lines = content.split('\n')
-        cls._cache = []
-        for line in lines:
-            row = line.split(sep)
-            if len(row) > 0:
-                cls._cache.append(row)
-        return cls
-
-    @classmethod
-    def get_records(cls) -> list:
-        return cls._cache
-
-
-class GoogleSheetsDataSource(BaseDataSource):
-    _gc = None
-    _user_id = None
-    _sheet = None
-
-    def __new__(cls, url: str, user_id: str = None, *args, **kwargs):
-        cls._user_id = user_id
-        cls._gc = gspread.service_account('service-account.json')
-        cls._sheet = cls._gc.open_by_url(url)
-        return super().__new__(cls)
-
-    @classmethod
-    def get_sheet(cls) -> Spreadsheet:
-        return cls._sheet
-
-    @classmethod
-    def get_user_id(cls) -> str:
-        return cls._user_id
-
-    @classmethod
-    def get_associated_membership_row(cls) -> list:
-        ws = cls.get_sheet().worksheet(title='Membership')
-        tg_ids = ws.col_values(3)
-        i = 0
-        for tg_id in tg_ids:
-            if tg_id.strip().lower() == cls.get_user_id().lower():
-                break
-            i += 1
-        if i != 0:
-            return ws.row_values(i + 1)
-        return []
-
-    @classmethod
-    def get_full_id(cls) -> str:
-        row = cls.get_associated_membership_row()
-        if len(row) > 0:
-            return row[4]
-        return ''
-
-    @classmethod
-    def format_value_cell(cls, value: str) -> float:
-        sub_strings = ['.00', '₽', ',', ' ']
-        for ss in sub_strings:
-            value = value.replace(ss, '')
-        return float(value) * 100
-
-
-class BalanceFromGoogleSheet(GoogleSheetsDataSource):
-
-    @classmethod
-    def get_records(cls) -> list:
-        row = cls.get_associated_membership_row()
-        if len(row) > 0:
-            return [{cls.get_user_id(): row[10]}]
-        return []
-
-
 class BalanceFromReSwynca(OpenApiDataSource):
     _user_id: str
 
@@ -184,16 +105,9 @@ class BalanceFromReSwynca(OpenApiDataSource):
         return super().__new__(cls, host, access_token)
 
     @classmethod
-    def init_api_client(cls) -> openapi_client.ApiClient:
-        re_swynca_config = openapi_client.Configuration(host=cls._host)
-        api_client = openapi_client.ApiClient(configuration=re_swynca_config)
-        api_client.set_default_header("Authorization", "Bearer " + cls._token)
-        return api_client
-
-    @classmethod
     def get_records(cls) -> list:
         result = []
-        with cls.init_api_client() as api_client:
+        with super().init_api_client() as api_client:
             members_api = MembersApi(api_client)
             members = members_api.members_controller_find_all()
             if len(members) == 0:
@@ -204,71 +118,37 @@ class BalanceFromReSwynca(OpenApiDataSource):
             return result
 
 
-class TransactionsFromGoogleSheet(GoogleSheetsDataSource):
+class TransactionsFromReSwynca(OpenApiDataSource):
+    _user_id: str
 
-    @classmethod
-    def get_cell_value(cls, row: list) -> str:
-        income = str(row[6])
-        consumption = str(row[5])
-        len_i = len(income)
-        len_c = len(consumption)
-        if len_i > 0 or (len_c > 0 and income == consumption):
-            return income
-        if len_c > 0:
-            return f'-{consumption}'
-        return '0'
+    def __new__(cls, host: str, access_token: str, user_id: str, *args, **kwargs):
+        cls._user_id = user_id
+        return super().__new__(cls, host, access_token)
 
     @classmethod
     def get_records(cls) -> list:
         result = []
-        full_id = cls.get_full_id().lower()
-        if full_id != '':
-            ws = cls.get_sheet().worksheet(title='Accounting')
-            data = ws.get_all_values()
-            i = 1
-            while True:
-                if i == len(data):
-                    break
-                if str(data[i][4]).lower().__contains__(full_id) \
-                        or str(data[i][7]).lower().__contains__(full_id):
-                    raw_value = cls.get_cell_value(data[i])
-                    '''result.append(Transaction(
-                        id=i,
-                        datetime=data[i][0],
-                        value=cls.format_value_cell(raw_value),
-                        comment=cls.make_comment(data[i])
-                    ))'''
-                i += 1
-        return result
-
-    @classmethod
-    def make_comment(cls, data: list) -> str:
-        result = f'{data[1]}'
-        if len(data[8]) > 0:
-            result += f' "{data[8]}"'
-        return result
-
-
-class ResidentDataSourceFromGoogleSheet(GoogleSheetsDataSource):
-
-    @classmethod
-    def get_records(cls) -> list:
-        result = []
-        ws = cls.get_sheet().worksheet(title='Membership')
-        data = ws.get_all_values()
-        if len(data) == 0:
+        with super().init_api_client() as api_client:
+            members_api = MembersApi(api_client)
+            tran_api = MemberTransactionsApi(api_client)
+            members = members_api.members_controller_find_all()
+            if len(members) == 0:
+                return result
+            for m in members:
+                if m.telegram_metadata is not None and m.telegram_metadata.telegram_id == cls._user_id:
+                    limit = 50
+                    offset = 0
+                    while True:
+                        trans = tran_api.member_transactions_controller_find_all_by_subject_member(
+                            member_id=m.id,
+                            offset=str(offset),
+                            count=str(limit),
+                            order_by='created_at',
+                            order_direction='asc'
+                        )
+                        result.extend(trans.transactions)
+                        if len(result) >= trans.count:
+                            return result
+                        offset += limit
             return result
-        i = 2
-        while True:
-            if i == len(data) or data[i][2] == '':
-                break
-            if str(data[i][2]).startswith('@') is False:
-                continue
 
-            '''result.append(Resident(
-                id=str(data[i][2]).replace('@', ''),
-                username='',
-                debt=cls.format_value_cell(str(data[i][10]))
-            ))'''
-            i += 1
-        return result
