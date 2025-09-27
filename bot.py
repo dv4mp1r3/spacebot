@@ -7,14 +7,16 @@ import uuid
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, F, Router, types
-from aiogram.filters import Command
-from aiogram.types import Message, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, FSInputFile
-from logic.data_providers import BalanceFromReSwynca, TransactionsFromReSwynca, BaseDataSource
+from aiogram.filters import Command, StateFilter
+from aiogram.types import Message, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, FSInputFile, CallbackQuery
+from logic.data_providers import BalanceFromReSwynca, TransactionsFromReSwynca, BaseDataSource, \
+    ActiveMembersFromReSwyncaDataSource
 from logic.access_control import DebugAlwaysAllowAccessControl
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import paho.mqtt.client as mqtt
 from dotenv.main import load_dotenv
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 load_dotenv()
 
@@ -23,11 +25,11 @@ HOST = os.getenv('SWYNCA_API_HOST')
 MQTT_URL = os.getenv('MQTT_URL')
 GOOGLE_SHEET_URL = os.getenv('GOOGLE_SHEET_URL')
 
-
 scheduler = AsyncIOScheduler()
 router = Router()
 tg_access_control = DebugAlwaysAllowAccessControl()
 cached_answers = dict()
+cached_tran_log = dict()
 
 
 def get_cached_data(command: str, username: str) -> str:
@@ -47,6 +49,8 @@ class Form(StatesGroup):
     tranlog = State()
     balance = State()
     open = State()
+    csv = State()
+    csv_parse_line = State()
 
 
 def on_connect(client, userdata, flags, rc):
@@ -136,7 +140,7 @@ async def command_balance(message: Message, state: FSMContext) -> None:
         data_source = BalanceFromReSwynca(host=HOST, access_token=TOKEN, user_id=str(message.from_user.id))
         records = data_source.get_records()
         if len(records) < 1:
-            #set_cached_data(command='balance', username=user_id, data='')
+            # set_cached_data(command='balance', username=user_id, data='')
             await message.answer(empty_balance_answer)
             return
         answer = records[0][str(message.from_user.id)]
@@ -167,6 +171,85 @@ async def commend_open_handler(message: Message, state: FSMContext) -> None:
             resize_keyboard=True
         ),
     )
+
+
+@router.message(Command(commands=['csv']))
+async def request_csv(message: Message, state: FSMContext) -> None:
+    await state.set_state(Form.csv)
+    await message.answer('Отправь следующим сообщением файл с транзакциями или /cancel для отмены')
+
+
+@router.message(StateFilter(Form.csv), F.document)
+async def parse_csv(message: Message, state: FSMContext) -> None:
+    doc = message.document
+    file_id = doc.file_id
+    file_name = doc.file_name
+    file = await doc.bot.get_file(file_id)
+    file_path = file.file_path
+    dest = f"/tmp/{file_name}"
+    await doc.bot.download_file(file_path, destination=dest)
+    with open(dest, mode="r", encoding="utf-8") as f:
+        content = f.read()
+        cached_tran_log[message.from_user.id] = content.splitlines()
+    while len(cached_tran_log[message.from_user.id]) > 1:
+        line = cached_tran_log[message.from_user.id].pop()
+        elements = line.split('";"')
+        if elements[6] == '':
+            continue
+        elements[6] = elements[6].replace(',', '.').strip()
+        tran_data_str = f'Дата транзакции: {elements[0]}, сумма {elements[6]}, примечание ({elements[9]}). Выбери резидента'
+        break
+    data_source = ActiveMembersFromReSwyncaDataSource(host=HOST, access_token=TOKEN, user_id=str(message.from_user.id))
+    records = data_source.get_records()
+    if len(records) > 0:
+        builder = InlineKeyboardBuilder()
+        await state.set_state(Form.tran_add_member)
+        for r in records:
+            builder.button(text=f'{r.telegram_metadata.telegram_name} ({r.name})', callback_data=f"tran:{r.id}")
+        builder.adjust(1)
+        await message.answer(
+            text=tran_data_str,
+            reply_markup=builder.as_markup()
+        )
+    else:
+        await state.clear()
+        await message.answer('В свинке нет записей о резидентах')
+    await state.set_state(Form.csv_parse_line)
+
+
+@router.callback_query(StateFilter(Form.csv_parse_line))
+async def parse_csv_line(query: CallbackQuery, state: FSMContext) -> None:
+    tran_data_str = ''
+    while len(cached_tran_log[query.from_user.id]) > 1:
+        line = cached_tran_log[query.from_user.id].pop()
+        elements = line.split('";"')
+        if elements[6] == '':
+            continue
+        elements[6] = elements[6].replace(',', '.').strip()
+        tran_data_str = f'Дата транзакции: {elements[0]}, сумма {elements[6]}, примечание ({elements[9]}). Выбери резидента'
+        break
+    if len(tran_data_str) == 0:
+        await state.clear()
+        await query.message.answer('Закончили обрабатывать документ')
+        await query.answer()
+        return
+    data_source = ActiveMembersFromReSwyncaDataSource(host=HOST, access_token=TOKEN, user_id=str(query.from_user.id))
+    records = data_source.get_records()
+    if len(records) > 0:
+        builder = InlineKeyboardBuilder()
+        await state.set_state(Form.tran_add_member)
+        for r in records:
+            builder.button(text=f'{r.telegram_metadata.telegram_name} ({r.name})', callback_data=f"tran:{r.id}")
+        builder.adjust(1)
+        await state.set_state(Form.csv_parse_line)
+        await query.message.answer(
+            text=tran_data_str,
+            reply_markup=builder.as_markup()
+        )
+    else:
+        await state.clear()
+        await query.message.answer('В свинке нет записей о резидентах')
+    await query.answer()
 
 
 @router.message(Form.open, F.text.casefold() == 'да')

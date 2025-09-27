@@ -1,7 +1,9 @@
 import openapi_client as openapi_client
+from openapi_client import MemberDTO
 from openapi_client.api.members_api import MembersApi
 from openapi_client.api.member_transactions_api import MemberTransactionsApi
 from openapi_client.exceptions import ApiException
+from typing import Callable
 
 
 class DataSourceMeta(type):
@@ -152,3 +154,21 @@ class TransactionsFromReSwynca(OpenApiDataSource):
                         offset += limit
             return result
 
+
+class ActiveMembersFromReSwyncaDataSource(OpenApiDataSource):
+    _user_id: str
+
+    def __new__(cls, host: str, access_token: str, user_id: str, *args, **kwargs):
+        cls._user_id = user_id
+        return super().__new__(cls, host, access_token)
+
+    @classmethod
+    def get_records(cls) -> list:
+        with super().init_api_client() as api_client:
+            members_api = MembersApi(api_client)
+            resp = members_api.members_controller_find_all()
+            only_active: Callable[[MemberDTO], bool] = \
+                lambda r: isinstance(r, MemberDTO) \
+                          and r.status == 'active' \
+                          and r.telegram_metadata.telegram_name is not None
+            return list(filter(only_active, resp))
