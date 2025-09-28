@@ -5,6 +5,7 @@ import sys
 import json
 import uuid
 
+from aiogram.methods import AnswerCallbackQuery
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.filters import Command, StateFilter
@@ -17,6 +18,8 @@ from aiogram.fsm.state import State, StatesGroup
 import paho.mqtt.client as mqtt
 from dotenv.main import load_dotenv
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from openapi_client import MemberDTO
 
 load_dotenv()
 
@@ -181,75 +184,74 @@ async def request_csv(message: Message, state: FSMContext) -> None:
 
 @router.message(StateFilter(Form.csv), F.document)
 async def parse_csv(message: Message, state: FSMContext) -> None:
-    doc = message.document
-    file_id = doc.file_id
-    file_name = doc.file_name
-    file = await doc.bot.get_file(file_id)
-    file_path = file.file_path
-    dest = f"/tmp/{file_name}"
-    await doc.bot.download_file(file_path, destination=dest)
+    file = await message.document.bot.get_file(message.document.file_id)
+    dest = f"/tmp/{message.document.file_name}"
+    await message.document.bot.download_file(file.file_path, destination=dest)
     with open(dest, mode="r", encoding="utf-8") as f:
         content = f.read()
         cached_tran_log[message.from_user.id] = content.splitlines()
-    while len(cached_tran_log[message.from_user.id]) > 1:
-        line = cached_tran_log[message.from_user.id].pop()
+    await member_tran_with_inline_keyboard_answer(message=message, state=state)
+
+
+def get_answer_object(query: CallbackQuery = None, message: Message = None) -> Message:
+    if query is not None:
+        return query.message
+    else:
+        return message
+
+
+def get_user_id(query: CallbackQuery = None, message: Message = None) -> int:
+    if query is not None:
+        return query.from_user.id
+    return message.from_user.id
+
+
+async def query_answer(query: CallbackQuery = None) -> AnswerCallbackQuery:
+    if query is not None:
+        return await query.answer()
+    return None
+
+
+async def member_tran_with_inline_keyboard_answer(
+        state: FSMContext,
+        query: CallbackQuery = None,
+        message: Message = None) -> None:
+    tran_data_str = ''
+    answer_object = get_answer_object(query, message)
+    user_id = get_user_id(query, message)
+    while len(cached_tran_log[user_id]) > 1:
+        line = cached_tran_log[user_id].pop()
         elements = line.split('";"')
         if elements[6] == '':
             continue
-        elements[6] = elements[6].replace(',', '.').strip()
-        tran_data_str = f'Дата транзакции: {elements[0]}, сумма {elements[6]}, примечание ({elements[9]}). Выбери резидента'
+        elements[6] = elements[6].replace(',', '.').replace(' ', '')
+        elements[0] = elements[0].replace('"', '')
+        tran_data_str = f'Дата транзакции: {elements[0]}, сумма {elements[6]}, примечание ({elements[9]}).' \
+                        f' Выбери резидента:'
         break
-    data_source = ActiveMembersFromReSwyncaDataSource(host=HOST, access_token=TOKEN, user_id=str(message.from_user.id))
+    if len(tran_data_str) == 0:
+        await state.clear()
+        await answer_object.answer('Закончили обрабатывать документ')
+        await query_answer(query)
+        return
+    data_source = ActiveMembersFromReSwyncaDataSource(host=HOST, access_token=TOKEN, user_id=str(user_id))
     records = data_source.get_records()
     if len(records) > 0:
-        builder = InlineKeyboardBuilder()
-        await state.set_state(Form.tran_add_member)
-        for r in records:
-            builder.button(text=f'{r.telegram_metadata.telegram_name} ({r.name})', callback_data=f"tran:{r.id}")
-        builder.adjust(1)
-        await message.answer(
+        builder = fill_inline_keyboard(records)
+        await state.set_state(Form.csv_parse_line)
+        await answer_object.answer(
             text=tran_data_str,
             reply_markup=builder.as_markup()
         )
     else:
         await state.clear()
-        await message.answer('В свинке нет записей о резидентах')
-    await state.set_state(Form.csv_parse_line)
+        await answer_object.answer('В свинке нет записей о резидентах')
+    await query_answer(query)
 
 
 @router.callback_query(StateFilter(Form.csv_parse_line))
 async def parse_csv_line(query: CallbackQuery, state: FSMContext) -> None:
-    tran_data_str = ''
-    while len(cached_tran_log[query.from_user.id]) > 1:
-        line = cached_tran_log[query.from_user.id].pop()
-        elements = line.split('";"')
-        if elements[6] == '':
-            continue
-        elements[6] = elements[6].replace(',', '.').strip()
-        tran_data_str = f'Дата транзакции: {elements[0]}, сумма {elements[6]}, примечание ({elements[9]}). Выбери резидента'
-        break
-    if len(tran_data_str) == 0:
-        await state.clear()
-        await query.message.answer('Закончили обрабатывать документ')
-        await query.answer()
-        return
-    data_source = ActiveMembersFromReSwyncaDataSource(host=HOST, access_token=TOKEN, user_id=str(query.from_user.id))
-    records = data_source.get_records()
-    if len(records) > 0:
-        builder = InlineKeyboardBuilder()
-        await state.set_state(Form.tran_add_member)
-        for r in records:
-            builder.button(text=f'{r.telegram_metadata.telegram_name} ({r.name})', callback_data=f"tran:{r.id}")
-        builder.adjust(1)
-        await state.set_state(Form.csv_parse_line)
-        await query.message.answer(
-            text=tran_data_str,
-            reply_markup=builder.as_markup()
-        )
-    else:
-        await state.clear()
-        await query.message.answer('В свинке нет записей о резидентах')
-    await query.answer()
+    await member_tran_with_inline_keyboard_answer(query=query, state=state)
 
 
 @router.message(Form.open, F.text.casefold() == 'да')
@@ -307,6 +309,16 @@ async def main() -> None:
         scheduler.add_job(send_deposit_notifications, "cron", day=1, minute=0, args=(dp, bot))
         scheduler.start()
     await dp.start_polling(bot)
+
+
+def fill_inline_keyboard(records: list[MemberDTO]) -> InlineKeyboardBuilder:
+    builder = InlineKeyboardBuilder()
+    for r in records:
+        builder.button(text=f'{r.telegram_metadata.telegram_name} ({r.name})', callback_data=f"tran:{r.id}")
+    builder.button(text=f'Пропустить запись', callback_data=f"tran:skip")
+    builder.button(text=f'Прекратить обработку', callback_data=f"tran:break")
+    builder.adjust(1)
+    return builder
 
 
 async def send_deposit_notifications(dp: Dispatcher, bot):
