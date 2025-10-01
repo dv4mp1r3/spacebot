@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import logging
 import os
 import sys
@@ -7,15 +8,20 @@ import uuid
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, F, Router, types
-from aiogram.filters import Command
-from aiogram.types import Message, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, InputFile, FSInputFile
-from logic.data_providers import TransactionDataSource, ResidentDataSource, CsvDataSource, BalanceFromGoogleSheet, \
-    TransactionsFromGoogleSheet, ResidentDataSourceFromGoogleSheet
-from logic.access_control import TelegramCsvBasedAccessControl
+from aiogram.filters import Command, StateFilter
+from aiogram.types import Message, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, FSInputFile, CallbackQuery
+
+import openapi_client
+from logic.data_providers import BalanceFromReSwynca, TransactionsFromReSwynca, BaseDataSource, \
+    ActiveMembersFromReSwyncaDataSource
+from logic.access_control import DebugAlwaysAllowAccessControl
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 import paho.mqtt.client as mqtt
 from dotenv.main import load_dotenv
+from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+from openapi_client import MemberDTO, CreateMemberTransactionDTO
 
 load_dotenv()
 
@@ -23,11 +29,32 @@ TOKEN = os.getenv('SWYNCA_API_TOKEN')
 HOST = os.getenv('SWYNCA_API_HOST')
 MQTT_URL = os.getenv('MQTT_URL')
 GOOGLE_SHEET_URL = os.getenv('GOOGLE_SHEET_URL')
+TREASURER_USER_ID = int(os.getenv('TREASURER_USER_ID'))
 
 scheduler = AsyncIOScheduler()
 router = Router()
-tg_access_control = TelegramCsvBasedAccessControl(CsvDataSource('residents.csv', ','))
+tg_access_control = DebugAlwaysAllowAccessControl()
 cached_answers = dict()
+cached_tran_log = dict()
+
+
+def is_tran_key(data: str) -> bool:
+    elements = data.split('-', 1)
+    if len(elements) != 2:
+        return False
+    try:
+        int(elements[0])
+        return is_valid_guid(elements[1])
+    except ValueError:
+        return False
+
+
+def is_valid_guid(guid_str: str) -> bool:
+    try:
+        uuid.UUID(guid_str)
+        return True
+    except ValueError:
+        return False
 
 
 def get_cached_data(command: str, username: str) -> str:
@@ -47,6 +74,8 @@ class Form(StatesGroup):
     tranlog = State()
     balance = State()
     open = State()
+    csv = State()
+    csv_parse_line = State()
 
 
 def on_connect(client, userdata, flags, rc):
@@ -101,18 +130,17 @@ async def command_transaction_log(message: Message, state: FSMContext) -> None:
     username = mock_username(message.from_user.username)
     answer = get_cached_data(command='tranlog', username=username)
     if len(answer) <= 0:
-        data_source = TransactionsFromGoogleSheet(url=GOOGLE_SHEET_URL, user_id=f'@{username}')
+        data_source = TransactionsFromReSwynca(host=HOST, access_token=TOKEN, user_id=str(message.from_user.id))
         if data_source.get_records_count() <= 0:
             await message.answer('На текущий момент нет записей в логе транзакций.')
             return
         answer = 'Список транзакций:\n'
         for record in data_source.get_records():
-            summ = record.value / 100
-            answer += f"{record.datetime} на сумму {summ}"
+            answer += f"{record.var_date} на сумму {record.amount}"
             if record.comment is not None and len(record.comment) > 0:
                 answer += f"({record.comment})"
             answer += '\n'
-        set_cached_data(command='tranlog', username=username, data=answer)
+        # set_cached_data(command='tranlog', username=username, data=answer)
     if len(answer) > 4096:
         filepath = f'/tmp/{username}-{gen_random_string()}.log'
         f = open(filepath, "a")
@@ -134,13 +162,13 @@ async def command_balance(message: Message, state: FSMContext) -> None:
     user_id = f'@{mock_username(message.from_user.username)}'
     answer = get_cached_data('balance', user_id)
     if len(answer) <= 0:
-        data_source = BalanceFromGoogleSheet(url=GOOGLE_SHEET_URL, user_id=user_id)
+        data_source = BalanceFromReSwynca(host=HOST, access_token=TOKEN, user_id=str(message.from_user.id))
         records = data_source.get_records()
         if len(records) < 1:
-            set_cached_data(command='balance', username=user_id, data='')
+            # set_cached_data(command='balance', username=user_id, data='')
             await message.answer(empty_balance_answer)
             return
-        answer = records[0][user_id]
+        answer = records[0][str(message.from_user.id)]
         if len(answer) < 1:
             set_cached_data(command='balance', username=user_id, data=answer)
             await message.answer(empty_balance_answer)
@@ -168,6 +196,139 @@ async def commend_open_handler(message: Message, state: FSMContext) -> None:
             resize_keyboard=True
         ),
     )
+
+
+@router.message(Command(commands=['csv']))
+async def request_csv(message: Message, state: FSMContext) -> None:
+    if message.from_user.id != TREASURER_USER_ID:
+        await message.answer('Команда доступна только для казначея')
+        return
+    await state.set_state(Form.csv)
+    await message.answer('Отправь следующим сообщением файл с транзакциями или /cancel для отмены')
+
+
+@router.message(StateFilter(Form.csv), F.document)
+async def parse_csv(message: Message, state: FSMContext) -> None:
+    csv_file = await message.document.bot.get_file(message.document.file_id)
+    dest = f"/tmp/{message.document.file_name}"
+    await message.document.bot.download_file(csv_file.file_path, destination=dest)
+    with open(dest, mode="r", encoding="utf-8") as f:
+        content = f.read()
+        cached_tran_log[str(message.from_user.id)] = content.splitlines()
+    await member_tran_with_inline_keyboard_answer(message=message, state=state)
+
+
+def get_answer_object(query: CallbackQuery = None, message: Message = None) -> Message:
+    if query is not None:
+        return query.message
+    else:
+        return message
+
+
+def get_user_id(query: CallbackQuery = None, message: Message = None) -> int:
+    if query is not None:
+        return query.from_user.id
+    return message.from_user.id
+
+
+async def query_answer(query: CallbackQuery = None) -> None:
+    if query is not None:
+        await query.answer()
+
+
+def parse_datetime_with_utc3(date_str: str) -> datetime:
+    dt = datetime.datetime.strptime(date_str, "%d.%m.%Y %H:%M")
+    tz = datetime.timezone(datetime.timedelta(hours=3))
+    return dt.replace(tzinfo=tz)
+
+
+async def member_tran_with_inline_keyboard_answer(
+        state: FSMContext,
+        query: CallbackQuery = None,
+        message: Message = None,
+        create_tran_result: str = ''
+) -> None:
+    tran_data_str = ''
+    answer_object = get_answer_object(query, message)
+    user_id = str(get_user_id(query, message))
+    tran = {}
+    while len(cached_tran_log[user_id]) > 1:
+        line = cached_tran_log[user_id].pop()
+        elements = line.split('";"')
+        if elements[6] == '':
+            continue
+        elements[6] = elements[6].replace(',', '.').replace(' ', '')
+        elements[0] = elements[0].replace('"', '')
+        tran_data_str = f'{create_tran_result}Новая транзакция. Дата транзакции: {elements[0]}, ' \
+                        f'сумма {elements[6]}, примечание ({elements[9]}).' \
+                        f' Выбери резидента:'
+        tran = {
+            'type': 'deposit',
+            'source': 'topup',
+            'target': None,
+            'comment': 'debug topup from spacebot',
+            'amount': str(elements[6]),
+            'date': parse_datetime_with_utc3(elements[0]),
+        }
+        break
+    if len(tran_data_str) == 0:
+        del_cached_tran_log_by_user_id(get_user_id(query, message))
+        await state.clear()
+        await answer_object.answer('Закончили обрабатывать файл')
+        await query_answer(query)
+        return
+    data_source = ActiveMembersFromReSwyncaDataSource(host=HOST, access_token=TOKEN, user_id=user_id)
+    records = data_source.get_records()
+    if len(records) > 0:
+        builder = fill_inline_keyboard_by_active_members(records, tran, user_id)
+        await state.set_state(Form.csv_parse_line)
+        await answer_object.answer(
+            text=tran_data_str,
+            reply_markup=builder.as_markup()
+        )
+    else:
+        await state.clear()
+        await answer_object.answer('В свинке нет записей о резидентах')
+    await query_answer(query)
+
+
+def del_cached_tran_log_by_user_id(user_id: int) -> None:
+    uid = str(user_id)
+    to_remove = []
+
+    for key in cached_tran_log.keys():
+        if isinstance(key, str) and key.startswith(uid):
+            to_remove.append(key)
+    for key in to_remove:
+        del cached_tran_log[key]
+    if uid in cached_tran_log:
+        del cached_tran_log[uid]
+
+
+@router.callback_query(StateFilter(Form.csv_parse_line))
+async def parse_csv_line(query: CallbackQuery, state: FSMContext) -> None:
+    create_tran_result = ''
+    data = query.data.lstrip('tran:')
+    if data == 'break':
+        del_cached_tran_log_by_user_id(get_user_id(query, None))
+        await state.clear()
+        await query.message.answer('Обработка файла остановлена')
+        await query.answer()
+        return
+    if is_tran_key(data):
+        re_swynca_config = openapi_client.Configuration(host=HOST)
+        api_client = openapi_client.ApiClient(configuration=re_swynca_config)
+        api_client.set_default_header("Authorization", "Bearer " + TOKEN)
+        tran_api = openapi_client.MemberTransactionsApi(api_client)
+        tran = cached_tran_log[data]
+        del cached_tran_log[data]
+        tran_object = CreateMemberTransactionDTO.from_dict(tran)
+        create_result = tran_api.member_transactions_controller_create(tran_object)
+        if create_result is None or create_result.actor is None:
+            create_tran_result = 'something wrong'
+        else:
+            create_tran_result = f'Баланс резидента пополнен на {tran_object.amount}р.'
+    await member_tran_with_inline_keyboard_answer(query=query, state=state, create_tran_result=create_tran_result)
 
 
 @router.message(Form.open, F.text.casefold() == 'да')
@@ -227,8 +388,26 @@ async def main() -> None:
     await dp.start_polling(bot)
 
 
+def fill_inline_keyboard_by_active_members(records: list[MemberDTO], tran: dict, user_id: str) \
+        -> InlineKeyboardBuilder:
+    builder = InlineKeyboardBuilder()
+    for r in records:
+        guid = str(uuid.uuid4())
+        key = f'{user_id}-{guid}'
+        cached_tran_log[key] = tran.copy()
+        cached_tran_log[key]['subjectId'] = r.id
+        builder.button(
+            text=f'{r.telegram_metadata.telegram_name} ({r.name})',
+            callback_data=f"tran:{key}"
+        )
+    builder.button(text='Пропустить запись', callback_data="tran:skip")
+    builder.button(text='Прекратить обработку', callback_data="tran:break")
+    builder.adjust(1)
+    return builder
+
+
 async def send_deposit_notifications(dp: Dispatcher, bot):
-    data_source = ResidentDataSourceFromGoogleSheet(url=GOOGLE_SHEET_URL)
+    data_source = BaseDataSource()
 
     if data_source.get_records_count() <= 0:
         return
