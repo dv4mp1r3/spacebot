@@ -82,10 +82,10 @@ def on_connect(client, userdata, flags, rc):
     logging.info(f"mqtt connected with result code {str(rc)}")
 
 
-def mock_username(real_username: str) -> str:
+def mock_user_id(real_username: int) -> int:
     from_env_username = os.getenv('DEBUG_TG_USERNAME')
-    if len(from_env_username) > 0:
-        return from_env_username
+    if from_env_username is not None and len(from_env_username) > 0:
+        return int(from_env_username)
     return real_username
 
 
@@ -127,10 +127,11 @@ async def command_start_handler(message: Message, state: FSMContext) -> None:
 @router.message(Command(commands=["tranlog"]))
 async def command_transaction_log(message: Message, state: FSMContext) -> None:
     await state.set_state(Form.tranlog)
-    username = mock_username(message.from_user.username)
-    answer = get_cached_data(command='tranlog', username=username)
+    username = message.from_user.username
+    user_id = mock_user_id(message.from_user.id)
+    answer = get_cached_data(command='tranlog', username=user_id)
     if len(answer) <= 0:
-        data_source = TransactionsFromReSwynca(host=HOST, access_token=TOKEN, user_id=str(message.from_user.id))
+        data_source = TransactionsFromReSwynca(host=HOST, access_token=TOKEN, user_id=str(user_id))
         if data_source.get_records_count() <= 0:
             await message.answer('На текущий момент нет записей в логе транзакций.')
             return
@@ -153,16 +154,16 @@ async def command_transaction_log(message: Message, state: FSMContext) -> None:
 async def command_balance(message: Message, state: FSMContext) -> None:
     empty_balance_answer = 'На текущий момент нет записей по балансу.'
     await state.set_state(Form.balance)
-    user_id = f'@{mock_username(message.from_user.username)}'
+    user_id = mock_user_id(message.from_user.id)
     answer = get_cached_data('balance', user_id)
     if len(answer) <= 0:
-        data_source = BalanceFromReSwynca(host=HOST, access_token=TOKEN, user_id=str(message.from_user.id))
+        data_source = BalanceFromReSwynca(host=HOST, access_token=TOKEN, user_id=str(user_id))
         records = data_source.get_records()
         if len(records) < 1:
             # set_cached_data(command='balance', username=user_id, data='')
             await message.answer(empty_balance_answer)
             return
-        answer = records[0][str(message.from_user.id)]
+        answer = records[0][str(user_id)]
         if len(answer) < 1:
             set_cached_data(command='balance', username=user_id, data=answer)
             await message.answer(empty_balance_answer)
