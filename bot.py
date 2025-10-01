@@ -6,7 +6,6 @@ import sys
 import json
 import uuid
 
-from aiogram.methods import AnswerCallbackQuery
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.filters import Command, StateFilter
@@ -210,9 +209,9 @@ async def request_csv(message: Message, state: FSMContext) -> None:
 
 @router.message(StateFilter(Form.csv), F.document)
 async def parse_csv(message: Message, state: FSMContext) -> None:
-    file = await message.document.bot.get_file(message.document.file_id)
+    csv_file = await message.document.bot.get_file(message.document.file_id)
     dest = f"/tmp/{message.document.file_name}"
-    await message.document.bot.download_file(file.file_path, destination=dest)
+    await message.document.bot.download_file(csv_file.file_path, destination=dest)
     with open(dest, mode="r", encoding="utf-8") as f:
         content = f.read()
         cached_tran_log[str(message.from_user.id)] = content.splitlines()
@@ -232,10 +231,9 @@ def get_user_id(query: CallbackQuery = None, message: Message = None) -> int:
     return message.from_user.id
 
 
-async def query_answer(query: CallbackQuery = None) -> AnswerCallbackQuery:
+async def query_answer(query: CallbackQuery = None) -> None:
     if query is not None:
-        return await query.answer()
-    return None
+        await query.answer()
 
 
 def parse_datetime_with_utc3(date_str: str) -> datetime:
@@ -253,7 +251,7 @@ async def member_tran_with_inline_keyboard_answer(
     tran_data_str = ''
     answer_object = get_answer_object(query, message)
     user_id = str(get_user_id(query, message))
-
+    tran = {}
     while len(cached_tran_log[user_id]) > 1:
         line = cached_tran_log[user_id].pop()
         elements = line.split('";"')
@@ -261,7 +259,8 @@ async def member_tran_with_inline_keyboard_answer(
             continue
         elements[6] = elements[6].replace(',', '.').replace(' ', '')
         elements[0] = elements[0].replace('"', '')
-        tran_data_str = f'{create_tran_result}Новая транзакция. Дата транзакции: {elements[0]}, сумма {elements[6]}, примечание ({elements[9]}).' \
+        tran_data_str = f'{create_tran_result}Новая транзакция. Дата транзакции: {elements[0]}, ' \
+                        f'сумма {elements[6]}, примечание ({elements[9]}).' \
                         f' Выбери резидента:'
         tran = {
             'type': 'deposit',
@@ -273,7 +272,7 @@ async def member_tran_with_inline_keyboard_answer(
         }
         break
     if len(tran_data_str) == 0:
-        del_cached_tran_log_by_user_id(str(get_user_id(query, message)))
+        del_cached_tran_log_by_user_id(get_user_id(query, message))
         await state.clear()
         await answer_object.answer('Закончили обрабатывать файл')
         await query_answer(query)
@@ -311,7 +310,7 @@ async def parse_csv_line(query: CallbackQuery, state: FSMContext) -> None:
     create_tran_result = ''
     data = query.data.lstrip('tran:')
     if data == 'break':
-        del_cached_tran_log_by_user_id(str(get_user_id(query, None)))
+        del_cached_tran_log_by_user_id(get_user_id(query, None))
         await state.clear()
         await query.message.answer('Обработка файла остановлена')
         await query.answer()
@@ -401,8 +400,8 @@ def fill_inline_keyboard_by_active_members(records: list[MemberDTO], tran: dict,
             text=f'{r.telegram_metadata.telegram_name} ({r.name})',
             callback_data=f"tran:{key}"
         )
-    builder.button(text=f'Пропустить запись', callback_data=f"tran:skip")
-    builder.button(text=f'Прекратить обработку', callback_data=f"tran:break")
+    builder.button(text='Пропустить запись', callback_data="tran:skip")
+    builder.button(text='Прекратить обработку', callback_data="tran:break")
     builder.adjust(1)
     return builder
 
