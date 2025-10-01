@@ -30,12 +30,24 @@ TOKEN = os.getenv('SWYNCA_API_TOKEN')
 HOST = os.getenv('SWYNCA_API_HOST')
 MQTT_URL = os.getenv('MQTT_URL')
 GOOGLE_SHEET_URL = os.getenv('GOOGLE_SHEET_URL')
+TREASURER_USER_ID = int(os.getenv('TREASURER_USER_ID'))
 
 scheduler = AsyncIOScheduler()
 router = Router()
 tg_access_control = DebugAlwaysAllowAccessControl()
 cached_answers = dict()
 cached_tran_log = dict()
+
+
+def is_tran_key(data: str) -> bool:
+    elements = data.split('-', 1)
+    if len(elements) != 2:
+        return False
+    try:
+        int(elements[0])
+        return is_valid_guid(elements[1])
+    except ValueError:
+        return False
 
 
 def is_valid_guid(guid_str: str) -> bool:
@@ -189,6 +201,9 @@ async def commend_open_handler(message: Message, state: FSMContext) -> None:
 
 @router.message(Command(commands=['csv']))
 async def request_csv(message: Message, state: FSMContext) -> None:
+    if message.from_user.id != TREASURER_USER_ID:
+        await message.answer('Команда доступна только для казначея')
+        return
     await state.set_state(Form.csv)
     await message.answer('Отправь следующим сообщением файл с транзакциями или /cancel для отмены')
 
@@ -223,6 +238,12 @@ async def query_answer(query: CallbackQuery = None) -> AnswerCallbackQuery:
     return None
 
 
+def parse_datetime_with_utc3(date_str: str) -> datetime:
+    dt = datetime.datetime.strptime(date_str, "%d.%m.%Y %H:%M")
+    tz = datetime.timezone(datetime.timedelta(hours=3))
+    return dt.replace(tzinfo=tz)
+
+
 async def member_tran_with_inline_keyboard_answer(
         state: FSMContext,
         query: CallbackQuery = None,
@@ -248,7 +269,7 @@ async def member_tran_with_inline_keyboard_answer(
             'target': None,
             'comment': 'debug topup from spacebot',
             'amount': str(elements[6]),
-            'date': '2025-10-01T10:11:00.000Z',
+            'date': parse_datetime_with_utc3(elements[0]),
         }
         break
     if len(tran_data_str) == 0:
@@ -295,7 +316,7 @@ async def parse_csv_line(query: CallbackQuery, state: FSMContext) -> None:
         await query.message.answer('Обработка файла остановлена')
         await query.answer()
         return
-    if is_valid_guid(data):
+    if is_tran_key(data):
         re_swynca_config = openapi_client.Configuration(host=HOST)
         api_client = openapi_client.ApiClient(configuration=re_swynca_config)
         api_client.set_default_header("Authorization", "Bearer " + TOKEN)
