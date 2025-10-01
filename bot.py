@@ -200,7 +200,7 @@ async def parse_csv(message: Message, state: FSMContext) -> None:
     await message.document.bot.download_file(file.file_path, destination=dest)
     with open(dest, mode="r", encoding="utf-8") as f:
         content = f.read()
-        cached_tran_log[message.from_user.id] = content.splitlines()
+        cached_tran_log[str(message.from_user.id)] = content.splitlines()
     await member_tran_with_inline_keyboard_answer(message=message, state=state)
 
 
@@ -231,7 +231,7 @@ async def member_tran_with_inline_keyboard_answer(
 ) -> None:
     tran_data_str = ''
     answer_object = get_answer_object(query, message)
-    user_id = get_user_id(query, message)
+    user_id = str(get_user_id(query, message))
 
     while len(cached_tran_log[user_id]) > 1:
         line = cached_tran_log[user_id].pop()
@@ -252,14 +252,15 @@ async def member_tran_with_inline_keyboard_answer(
         }
         break
     if len(tran_data_str) == 0:
+        del_cached_tran_log_by_user_id(str(get_user_id(query, message)))
         await state.clear()
         await answer_object.answer('Закончили обрабатывать файл')
         await query_answer(query)
         return
-    data_source = ActiveMembersFromReSwyncaDataSource(host=HOST, access_token=TOKEN, user_id=str(user_id))
+    data_source = ActiveMembersFromReSwyncaDataSource(host=HOST, access_token=TOKEN, user_id=user_id)
     records = data_source.get_records()
     if len(records) > 0:
-        builder = fill_inline_keyboard_by_active_members(records, tran)
+        builder = fill_inline_keyboard_by_active_members(records, tran, user_id)
         await state.set_state(Form.csv_parse_line)
         await answer_object.answer(
             text=tran_data_str,
@@ -271,13 +272,27 @@ async def member_tran_with_inline_keyboard_answer(
     await query_answer(query)
 
 
+def del_cached_tran_log_by_user_id(user_id: int) -> None:
+    uid = str(user_id)
+    to_remove = []
+
+    for key in cached_tran_log.keys():
+        if isinstance(key, str) and key.startswith(uid):
+            to_remove.append(key)
+    for key in to_remove:
+        del cached_tran_log[key]
+    if uid in cached_tran_log:
+        del cached_tran_log[uid]
+
+
 @router.callback_query(StateFilter(Form.csv_parse_line))
 async def parse_csv_line(query: CallbackQuery, state: FSMContext) -> None:
     create_tran_result = ''
     data = query.data.lstrip('tran:')
     if data == 'break':
+        del_cached_tran_log_by_user_id(str(get_user_id(query, None)))
         await state.clear()
-        await query.answer('Обработка файла остановлена')
+        await query.message.answer('Обработка файла остановлена')
         await query.answer()
         return
     if is_valid_guid(data):
@@ -286,6 +301,7 @@ async def parse_csv_line(query: CallbackQuery, state: FSMContext) -> None:
         api_client.set_default_header("Authorization", "Bearer " + TOKEN)
         tran_api = openapi_client.MemberTransactionsApi(api_client)
         tran = cached_tran_log[data]
+        del cached_tran_log[data]
         tran_object = CreateMemberTransactionDTO.from_dict(tran)
         create_result = tran_api.member_transactions_controller_create(tran_object)
         if create_result is None or create_result.actor is None:
@@ -352,16 +368,17 @@ async def main() -> None:
     await dp.start_polling(bot)
 
 
-def fill_inline_keyboard_by_active_members(records: list[MemberDTO], tran: dict) \
+def fill_inline_keyboard_by_active_members(records: list[MemberDTO], tran: dict, user_id: str) \
         -> InlineKeyboardBuilder:
     builder = InlineKeyboardBuilder()
     for r in records:
-        tran['subjectId'] = r.id
         guid = str(uuid.uuid4())
-        cached_tran_log[guid] = tran.copy()
+        key = f'{user_id}-{guid}'
+        cached_tran_log[key] = tran.copy()
+        cached_tran_log[key]['subjectId'] = r.id
         builder.button(
             text=f'{r.telegram_metadata.telegram_name} ({r.name})',
-            callback_data=f"tran:{guid}"
+            callback_data=f"tran:{key}"
         )
     builder.button(text=f'Пропустить запись', callback_data=f"tran:skip")
     builder.button(text=f'Прекратить обработку', callback_data=f"tran:break")
