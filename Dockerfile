@@ -11,7 +11,7 @@ RUN addgroup -S spacebot \
     --uid "1000" \
     spacebot
 
-COPY --chown=spacebot:spacebot ./.env ./residents.csv ./requirements.txt ./bot.py /openapi.yaml /service-account.json ./
+COPY --chown=spacebot:spacebot ./.env ./requirements.txt ./bot.py ./
 ADD --chown=spacebot:spacebot logic logic
 ADD --chown=spacebot:spacebot openapi_client openapi_client
 

@@ -7,7 +7,6 @@ Python 3.10.x or 3.11.x with pip for host or docker
 ```sh
 git clone https://github.com/dv4mp1r3/spacebot.git
 cd spacebot
-cp residents.csv.example residents.csv
 cp .env.example .env
 ```
 
