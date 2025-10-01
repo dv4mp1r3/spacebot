@@ -134,25 +134,19 @@ async def command_transaction_log(message: Message, state: FSMContext) -> None:
         if data_source.get_records_count() <= 0:
             await message.answer('На текущий момент нет записей в логе транзакций.')
             return
-        answer = 'Список транзакций:\n'
+        answer = 'Дата операции;Сумма;Тип;Комментарий\n'
         for record in data_source.get_records():
-            answer += f"{record.var_date} на сумму {record.amount}"
-            if record.comment is not None and len(record.comment) > 0:
-                answer += f"({record.comment})"
-            answer += '\n'
+            answer += f"{record.var_date};{record.amount};{record.type};{record.comment}\n"
         # set_cached_data(command='tranlog', username=username, data=answer)
-    if len(answer) > 4096:
-        filepath = f'/tmp/{username}-{gen_random_string()}.log'
-        f = open(filepath, "a")
-        f.write(answer)
-        f.close()
-        await message.answer_document(
-            document=FSInputFile(path=filepath, filename=f'{username}.log'),
-            caption='Транзакций слишком много, поэтому отправлены в файле'
-        )
-        os.remove(filepath)
-        return
-    await message.answer(answer)
+    filepath = f'/tmp/{username}-{gen_random_string()}.log'
+    f = open(filepath, "a")
+    f.write(answer)
+    f.close()
+    await message.answer_document(
+        document=FSInputFile(path=filepath, filename=f'{username}.csv'),
+        caption='Список во вложении'
+    )
+    os.remove(filepath)
 
 
 @router.message(Command(commands=["balance"]))
