@@ -1,4 +1,5 @@
 import asyncio
+import datetime
 import logging
 import os
 import sys
@@ -10,6 +11,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from aiogram import Bot, Dispatcher, F, Router, types
 from aiogram.filters import Command, StateFilter
 from aiogram.types import Message, ReplyKeyboardMarkup, ReplyKeyboardRemove, KeyboardButton, FSInputFile, CallbackQuery
+
+import openapi_client
 from logic.data_providers import BalanceFromReSwynca, TransactionsFromReSwynca, BaseDataSource, \
     ActiveMembersFromReSwyncaDataSource
 from logic.access_control import DebugAlwaysAllowAccessControl
@@ -19,7 +22,7 @@ import paho.mqtt.client as mqtt
 from dotenv.main import load_dotenv
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from openapi_client import MemberDTO
+from openapi_client import MemberDTO, CreateMemberTransactionDTO
 
 load_dotenv()
 
@@ -33,6 +36,14 @@ router = Router()
 tg_access_control = DebugAlwaysAllowAccessControl()
 cached_answers = dict()
 cached_tran_log = dict()
+
+
+def is_valid_guid(guid_str: str) -> bool:
+    try:
+        uuid.UUID(guid_str)
+        return True
+    except ValueError:
+        return False
 
 
 def get_cached_data(command: str, username: str) -> str:
@@ -215,10 +226,13 @@ async def query_answer(query: CallbackQuery = None) -> AnswerCallbackQuery:
 async def member_tran_with_inline_keyboard_answer(
         state: FSMContext,
         query: CallbackQuery = None,
-        message: Message = None) -> None:
+        message: Message = None,
+        create_tran_result: str = ''
+) -> None:
     tran_data_str = ''
     answer_object = get_answer_object(query, message)
     user_id = get_user_id(query, message)
+
     while len(cached_tran_log[user_id]) > 1:
         line = cached_tran_log[user_id].pop()
         elements = line.split('";"')
@@ -226,18 +240,26 @@ async def member_tran_with_inline_keyboard_answer(
             continue
         elements[6] = elements[6].replace(',', '.').replace(' ', '')
         elements[0] = elements[0].replace('"', '')
-        tran_data_str = f'Дата транзакции: {elements[0]}, сумма {elements[6]}, примечание ({elements[9]}).' \
+        tran_data_str = f'{create_tran_result}Новая транзакция. Дата транзакции: {elements[0]}, сумма {elements[6]}, примечание ({elements[9]}).' \
                         f' Выбери резидента:'
+        tran = {
+            'type': 'deposit',
+            'source': 'topup',
+            'target': None,
+            'comment': 'debug topup from spacebot',
+            'amount': str(elements[6]),
+            'date': '2025-10-01T10:11:00.000Z',
+        }
         break
     if len(tran_data_str) == 0:
         await state.clear()
-        await answer_object.answer('Закончили обрабатывать документ')
+        await answer_object.answer('Закончили обрабатывать файл')
         await query_answer(query)
         return
     data_source = ActiveMembersFromReSwyncaDataSource(host=HOST, access_token=TOKEN, user_id=str(user_id))
     records = data_source.get_records()
     if len(records) > 0:
-        builder = fill_inline_keyboard(records)
+        builder = fill_inline_keyboard_by_active_members(records, tran)
         await state.set_state(Form.csv_parse_line)
         await answer_object.answer(
             text=tran_data_str,
@@ -251,7 +273,26 @@ async def member_tran_with_inline_keyboard_answer(
 
 @router.callback_query(StateFilter(Form.csv_parse_line))
 async def parse_csv_line(query: CallbackQuery, state: FSMContext) -> None:
-    await member_tran_with_inline_keyboard_answer(query=query, state=state)
+    create_tran_result = ''
+    data = query.data.lstrip('tran:')
+    if data == 'break':
+        await state.clear()
+        await query.answer('Обработка файла остановлена')
+        await query.answer()
+        return
+    if is_valid_guid(data):
+        re_swynca_config = openapi_client.Configuration(host=HOST)
+        api_client = openapi_client.ApiClient(configuration=re_swynca_config)
+        api_client.set_default_header("Authorization", "Bearer " + TOKEN)
+        tran_api = openapi_client.MemberTransactionsApi(api_client)
+        tran = cached_tran_log[data]
+        tran_object = CreateMemberTransactionDTO.from_dict(tran)
+        create_result = tran_api.member_transactions_controller_create(tran_object)
+        if create_result is None or create_result.actor is None:
+            create_tran_result = 'something wrong'
+        else:
+            create_tran_result = f'Баланс резидента пополнен на {tran_object.amount}р.'
+    await member_tran_with_inline_keyboard_answer(query=query, state=state, create_tran_result=create_tran_result)
 
 
 @router.message(Form.open, F.text.casefold() == 'да')
@@ -311,10 +352,17 @@ async def main() -> None:
     await dp.start_polling(bot)
 
 
-def fill_inline_keyboard(records: list[MemberDTO]) -> InlineKeyboardBuilder:
+def fill_inline_keyboard_by_active_members(records: list[MemberDTO], tran: dict) \
+        -> InlineKeyboardBuilder:
     builder = InlineKeyboardBuilder()
     for r in records:
-        builder.button(text=f'{r.telegram_metadata.telegram_name} ({r.name})', callback_data=f"tran:{r.id}")
+        tran['subjectId'] = r.id
+        guid = str(uuid.uuid4())
+        cached_tran_log[guid] = tran.copy()
+        builder.button(
+            text=f'{r.telegram_metadata.telegram_name} ({r.name})',
+            callback_data=f"tran:{guid}"
+        )
     builder.button(text=f'Пропустить запись', callback_data=f"tran:skip")
     builder.button(text=f'Прекратить обработку', callback_data=f"tran:break")
     builder.adjust(1)
